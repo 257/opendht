@@ -11,6 +11,7 @@ namespace net {
 
 ConnectivityStatus::ConnectivityStatus()
     : logger_(new dht::Logger)
+    , bye(nlmsg_alloc_simple(NLMSG_NOOP, NLM_F_ECHO), &nlmsg_free)
     , nlsk(nlsk_init())
 {
     nlsk_setup(nlsk.get());
@@ -20,7 +21,31 @@ ConnectivityStatus::ConnectivityStatus()
 
 ConnectivityStatus::~ConnectivityStatus()
 {
-    nlsk.reset();
+    stop = true;
+
+    nl_socket_modify_cb(nlsk.get(), NL_CB_VALID, NL_CB_CUSTOM, [](nl_msg* msg, void* data) -> int {
+            OPENDHT_UNUSED_ARG(msg);
+            if (((ConnectivityStatus*)data)->logger_)
+                ((ConnectivityStatus*)data)->logger_->w("stopping msg processing\n");
+            return (((ConnectivityStatus*)data)->stop) ? NL_OK : NL_STOP;
+    }, (void*)this);
+
+    nl_socket_modify_cb(nlsk.get(), NL_CB_MSG_IN, NL_CB_CUSTOM, [](nl_msg* msg, void* data) -> int {
+            OPENDHT_UNUSED_ARG(msg);
+            if (((ConnectivityStatus*)data)->logger_)
+                ((ConnectivityStatus*)data)->logger_->w("got incoming msg\n");
+        return (((ConnectivityStatus*)data)->stop) ? NL_OK : NL_STOP;
+    }, (void*)this);
+
+    nl_socket_modify_cb(nlsk.get(), NL_CB_ACK, NL_CB_CUSTOM, [](nl_msg* msg, void* data) -> int {
+            OPENDHT_UNUSED_ARG(msg);
+            if (((ConnectivityStatus*)data)->logger_)
+                ((ConnectivityStatus*)data)->logger_->w("taking care of ACK\n");
+        return (((ConnectivityStatus*)data)->stop) ? NL_OK : NL_STOP;
+    }, (void*)this);
+
+
+    nl_send_auto(nlsk.get(), bye.get());
 
     if (thrd_.joinable())
         thrd_.join();
@@ -51,9 +76,9 @@ ConnectivityStatus::removeEventListener(Event event)
     event_cbs.erase(event);
     switch (event) {
     case Event::NEWADDR:
-        nl_socket_drop_memberships(nlsk.get(), RTNLGRP_IPV6_IFADDR, RTNLGRP_NONE);
-        break;
     case Event::DELADDR:
+    case Event::ADDR:
+        nl_socket_drop_memberships(nlsk.get(), RTNLGRP_IPV6_IFADDR, RTNLGRP_NONE);
         nl_socket_drop_memberships(nlsk.get(), RTNLGRP_IPV4_IFADDR, RTNLGRP_NONE);
         break;
     default:
@@ -74,9 +99,10 @@ void
 ConnectivityStatus::nlsk_setup(nl_sock* nlsk)
 {
     nl_socket_disable_seq_check(nlsk);
+    nl_socket_set_nonblocking(nlsk);
 
     nl_socket_modify_cb(nlsk, NL_CB_VALID, NL_CB_CUSTOM, [](nl_msg* msg, void* data) -> int {
-        return ((ConnectivityStatus*)data)->nl_event_cb(msg);
+            return ((ConnectivityStatus*)data)->nl_event_cb(msg);
     }, (void*)this);
 
     nl_connect(nlsk, NETLINK_ROUTE);
@@ -88,9 +114,8 @@ ConnectivityStatus::nlsk_init(void)
     NlPtr ret(nl_socket_alloc(), &nl_socket_free);
     if (not ret.get())
         throw std::runtime_error("couldn't allocate netlink socket!\n");
-
-
-    return ret;
+    else
+        return ret;
 }
 
 void
@@ -140,9 +165,9 @@ ConnectivityStatus::nl_event_cb(struct nl_msg* msg)
 void
 ConnectivityStatus::nl_event_loop_thrd(nl_sock *nlsk)
 {
-    int status = NL_OK;
-    while ((status = nl_recvmsgs_default(nlsk)) >= 0)
-        logger_->w("still looping!\n");
+    int status;
+    while (!stop && (status = nl_recvmsgs_report(nlsk, nl_socket_get_cb(nlsk))) > 0)
+        ;
 }
 
 } /* namespace net */

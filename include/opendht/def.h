@@ -42,3 +42,5 @@
 
 // bytes
 #define HASH_LEN 20u
+
+#define OPENDHT_UNUSED_ARG(arg)  (void)arg

@@ -23,9 +23,12 @@
 #include <functional>
 #include <thread>
 #include <mutex>
+#include <atomic>
 
 struct nl_sock;
 struct nl_msg;
+struct sockaddr_nl;
+struct ucred;
 
 namespace dht {
 namespace net {
@@ -78,6 +81,8 @@ private:
 
     std::map<Event, ConnectionEventCb> event_cbs = {};
 
+    using NlMsgPtr = std::unique_ptr<nl_msg, void(*)(nl_msg *)>;
+    NlMsgPtr bye;
     using NlPtr = std::unique_ptr<nl_sock, void(*)(nl_sock *)>;
     NlPtr nlsk;
     static NlPtr nlsk_init ();
@@ -87,6 +92,8 @@ private:
     void get_neigh_state    (struct nl_msg*);
     int nl_event_cb         (struct nl_msg*);
     void executer           (Event);
+
+    std::atomic_bool stop {false};
 
     std::thread thrd_;
 };
